@@ -10,7 +10,7 @@ import {
 	buildSendDeferredResponse,
 	handleTranslateSendModalSubmit,
 	handleTranslateSendProcess,
-	MODAL_CUSTOM_ID_PREFIX,
+	MODAL_CUSTOM_ID,
 	parseCommandOptions,
 	precheckTranslateSend,
 } from "./handlers/translateSend";
@@ -99,7 +99,7 @@ export default {
 
 /**
  * MODAL_SUBMIT (type 5) の振り分け。
- * custom_id プレフィックス "ts:" (/translate-send の modal) のみ処理し、
+ * custom_id が "ts" と完全一致 (/translate-send の modal) の場合のみ処理し、
  * それ以外は不明リクエストとして ephemeral エラーで即応する
  * (docs/translate-send-command.md §3.2, §8)。
  */
@@ -109,9 +109,7 @@ async function handleModalSubmit(
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
-		if (
-			interaction.data?.custom_id?.startsWith(MODAL_CUSTOM_ID_PREFIX) === true
-		) {
+		if (interaction.data?.custom_id === MODAL_CUSTOM_ID) {
 			return await handleTranslateSendModalSubmit(env, interaction, ctx);
 		}
 		return Response.json(

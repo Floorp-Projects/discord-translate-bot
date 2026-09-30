@@ -62,23 +62,72 @@ export interface GuildConfig {
 /**
  * Modal 内の Text Input (type 4) コンポーネント
  * (docs/translate-send-command.md §3.1)。
+ * Label (type 18) の内側に置く。2025-08-25 の Modal コンポーネント拡張により
+ * 旧仕様の TextInput 直下 label フィールドは非推奨 (Label 側の label を使う)。
  */
 export interface ModalTextInput {
 	type: 4;
 	custom_id: string;
-	/** 1: Short (単行) / 2: Paragraph (複数行) */
-	style: 1 | 2;
-	label: string;
+	/**
+	 * 1: Short (単行) / 2: Paragraph (複数行)。
+	 * type 9 応答（Modal構築）時のみ設定。
+	 * MODAL_SUBMIT 受信では value を使用
+	 */
+	style?: 1 | 2;
 	placeholder?: string;
 	min_length?: number;
 	max_length?: number;
 	required?: boolean;
+	/** MODAL_SUBMIT (type 5) の提出時に Discord から返される入力値 */
+	value?: string;
 }
 
-/** Modal 内の Action Row (type 1) — Text Input を 1 つだけ持つ */
-export interface ModalActionRow {
-	type: 1;
-	components: ModalTextInput[];
+/** Modal 内の String Select (type 3) の選択肢 */
+export interface ModalStringSelectOption {
+	/** 選択肢の表示ラベル */
+	label: string;
+	/** 選択時に送信される値 */
+	value: string;
+	description?: string;
+	/**
+	 * 初期選択。Modal の String Select では option 単位の default を使う
+	 * (default_values は User/Role Select 専用のため使えない)
+	 */
+	default?: boolean;
+}
+
+/**
+ * Modal 内の String Select (type 3) コンポーネント。
+ * Modal で使うには Label (type 18) でラップする
+ * (2025-08-25 の Modal コンポーネント拡張)。
+ */
+export interface ModalStringSelect {
+	type: 3;
+	custom_id: string;
+	/**
+	 * type 9 応答（Modal構築）時のみ設定。
+	 * MODAL_SUBMIT 受信では values を使用
+	 */
+	options?: ModalStringSelectOption[];
+	placeholder?: string;
+	required?: boolean;
+	/** MODAL_SUBMIT (type 5) の提出時に Discord から返される選択値 */
+	values?: string[];
+}
+
+/**
+ * Modal 内の Label (type 18) コンポーネント。
+ * TextInput / StringSelect などの入力コンポーネントは必ず Label でラップする
+ * (2025-08-25 の Modal コンポーネント拡張 — docs/translate-send-command.md §3)。
+ */
+export interface ModalLabel {
+	type: 18;
+	/** ラベル (45 字以内) */
+	label: string;
+	/** 説明文 (100 字以内) */
+	description?: string;
+	/** ラップする入力コンポーネント (単一) */
+	component: ModalTextInput | ModalStringSelect;
 }
 
 /** スラッシュ / コンテキストメニューコマンド共通の interaction.data */
@@ -102,15 +151,15 @@ export interface InteractionCommandData {
 	}>;
 	/**
 	 * MODAL_SUBMIT (type 5) のみ: modal の custom_id
-	 * (/translate-send では "ts:<language>:<include_original 0|1>")
+	 * (/translate-send では固定値 "ts" — 言語・原文添付は Modal 内 select で選ぶ)
 	 */
 	custom_id?: string;
 	/**
 	 * MODAL_SUBMIT (type 5) のみ: 提出されたコンポーネント
-	 * (ActionRow 配列 — 想定外の形状がありうるため unknown で受け、
-	 * ハンドラ側で防御的にパースする)
+	 * (Label (type 18) 配列 — 想定外の形状がありうるため実際のパースは
+	 * ハンドラ側で防御的に行う)
 	 */
-	components?: unknown;
+	components?: ModalLabel[];
 }
 
 /** followup / 応答で参照されるメッセージの最小限の情報 */
@@ -179,8 +228,8 @@ export interface InteractionResponse {
 		custom_id?: string;
 		/** type 9 (MODAL) 応答: modal のタイトル (45 字以内) */
 		title?: string;
-		/** type 9 (MODAL) 応答: modal を構成するコンポーネント */
-		components?: ModalActionRow[];
+		/** type 9 (MODAL) 応答: modal を構成する Label (type 18) コンポーネント */
+		components?: ModalLabel[];
 	};
 }
 

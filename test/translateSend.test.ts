@@ -10,8 +10,7 @@ import {
 import {
 	buildAvatarUrl,
 	buildWebhookMessageContent,
-	decodeModalCustomId,
-	encodeModalCustomId,
+	extractModalFields,
 	MAX_RETRY_AFTER_SECONDS,
 	resolveDisplayName,
 	WEBHOOK_NAME,
@@ -104,6 +103,10 @@ function buildSendCommandInteraction(
 
 interface ModalSubmitFixture {
 	customId?: string;
+	/** 言語 select の提出値 (省略時 "en") */
+	language?: string;
+	/** 原文添付 select の提出値 (省略時 "1") */
+	includeOriginal?: string;
 	text?: string;
 	/** components を外す (想定外形状への防御確認) */
 	omitComponents?: boolean;
@@ -111,7 +114,11 @@ interface ModalSubmitFixture {
 	overrides?: Partial<Interaction>;
 }
 
-/** MODAL_SUBMIT (type 5) の interaction フィクスチャ */
+/**
+ * MODAL_SUBMIT (type 5) の interaction フィクスチャ。
+ * 2025-08-25 の Modal 拡張と同じく、入力は Label (type 18) でラップされ、
+ * String Select は values / Text Input は value で提出される。
+ */
 function buildModalSubmitInteraction(
 	fixture: ModalSubmitFixture = {},
 ): Interaction {
@@ -124,26 +131,57 @@ function buildModalSubmitInteraction(
 		channel_id: CHANNEL_ID,
 		channel: { id: CHANNEL_ID, type: 0 },
 		data: {
-			custom_id: fixture.customId ?? "ts:ja:1",
+			custom_id: fixture.customId ?? "ts",
 			...(fixture.omitComponents
 				? {}
 				: {
 						components: [
 							{
-								type: 1,
-								components: [
-									{
-										type: 4,
-										custom_id: "text",
-										value: fixture.text ?? "Hello",
-									},
-								],
+								type: 18,
+								label: "翻訳先の言語",
+								component: {
+									type: 3,
+									custom_id: "language",
+									values: [fixture.language ?? "en"],
+								},
+							},
+							{
+								type: 18,
+								label: "原文の添付",
+								component: {
+									type: 3,
+									custom_id: "include_original",
+									values: [fixture.includeOriginal ?? "1"],
+								},
+							},
+							{
+								type: 18,
+								label: "送信したいテキスト",
+								component: {
+									type: 4,
+									custom_id: "text",
+									value: fixture.text ?? "Hello",
+								},
 							},
 						],
 					}),
 		},
 		member: fixture.member ?? buildMember(),
 		...fixture.overrides,
+	};
+}
+
+/** 想定外形状の components を持つ MODAL_SUBMIT を組み立てる (防御パースの検証用) */
+function buildMalformedModalSubmitInteraction(
+	components: unknown[],
+): Interaction {
+	const base = buildModalSubmitInteraction({});
+	return {
+		...base,
+		data: {
+			custom_id: "ts",
+			components,
+		} as Interaction["data"],
 	};
 }
 
@@ -279,41 +317,97 @@ function createDiscordApiMock(
 	};
 }
 
-describe("encodeModalCustomId / decodeModalCustomId", () => {
-	it("エンコードは 'ts:<language>:<1|0>' 形式", () => {
-		expect(encodeModalCustomId("en", true)).toBe("ts:en:1");
-		expect(encodeModalCustomId("ja", false)).toBe("ts:ja:0");
-	});
-
-	it("デコードはエンコード結果を復元できる", () => {
-		expect(decodeModalCustomId("ts:en:1")).toEqual({
-			language: "en",
-			includeOriginal: true,
-		});
-		expect(decodeModalCustomId("ts:ja:0")).toEqual({
+describe("extractModalFields (MODAL_SUBMIT の防御パース)", () => {
+	it("Label 構造から language / include_original / text を取り出す", () => {
+		const fields = extractModalFields(
+			buildModalSubmitInteraction({
+				language: "ja",
+				includeOriginal: "0",
+				text: "Hello",
+			}),
+		);
+		expect(fields).toEqual({
 			language: "ja",
-			includeOriginal: false,
+			includeOriginal: "0",
+			text: "Hello",
 		});
 	});
 
-	it("ts: プレフィックス外は null", () => {
-		expect(decodeModalCustomId("other-modal:en:1")).toBeNull();
-		expect(decodeModalCustomId("ts-en:1")).toBeNull();
-		expect(decodeModalCustomId("")).toBeNull();
+	it("Label でない要素 (旧形式の ActionRow 等) は無視される", () => {
+		const interaction = buildMalformedModalSubmitInteraction([
+			{
+				type: 1,
+				components: [{ type: 4, custom_id: "text", value: "old form" }],
+			},
+		]);
+		expect(extractModalFields(interaction)).toEqual({});
 	});
 
-	it("言語不正・継承プロパティ名は null (Object.hasOwn 防御)", () => {
-		expect(decodeModalCustomId("ts:zz:1")).toBeNull();
-		expect(decodeModalCustomId("ts:toString:1")).toBeNull();
-		expect(decodeModalCustomId("ts:constructor:0")).toBeNull();
+	it("非オブジェクト要素・component 欠落・非オブジェクト component の Label は無視される", () => {
+		const interaction = buildMalformedModalSubmitInteraction([
+			"not-an-object",
+			{ type: 18, label: "component なし" },
+			{ type: 18, label: "component が文字列", component: "broken" },
+		]);
+		expect(extractModalFields(interaction)).toEqual({});
 	});
 
-	it("フラグ不正・セグメント数不正は null", () => {
-		expect(decodeModalCustomId("ts:en:2")).toBeNull();
-		expect(decodeModalCustomId("ts:en:true")).toBeNull();
-		expect(decodeModalCustomId("ts:en")).toBeNull();
-		expect(decodeModalCustomId("ts:en:1:extra")).toBeNull();
-		expect(decodeModalCustomId("ts:")).toBeNull();
+	it("custom_id が文字列でないコンポーネントは無視される", () => {
+		const interaction = buildMalformedModalSubmitInteraction([
+			{ type: 18, label: "x", component: { type: 3, values: ["ja"] } },
+		]);
+		expect(extractModalFields(interaction)).toEqual({});
+	});
+
+	it("Select の values が空配列・非配列・非文字列の場合は取り出さない", () => {
+		const empty = buildMalformedModalSubmitInteraction([
+			{
+				type: 18,
+				label: "x",
+				component: { type: 3, custom_id: "language", values: [] },
+			},
+		]);
+		expect(extractModalFields(empty)).toEqual({});
+
+		const nonArray = buildMalformedModalSubmitInteraction([
+			{
+				type: 18,
+				label: "x",
+				component: { type: 3, custom_id: "language", values: "ja" },
+			},
+		]);
+		expect(extractModalFields(nonArray)).toEqual({});
+
+		const nonString = buildMalformedModalSubmitInteraction([
+			{
+				type: 18,
+				label: "x",
+				component: { type: 3, custom_id: "language", values: [1] },
+			},
+		]);
+		expect(extractModalFields(nonString)).toEqual({});
+	});
+
+	it("text custom_id でも Text Input (type 4) 以外は取り出さない", () => {
+		const interaction = buildMalformedModalSubmitInteraction([
+			{
+				type: 18,
+				label: "x",
+				component: { type: 3, custom_id: "text", values: ["Hello"] },
+			},
+		]);
+		expect(extractModalFields(interaction)).toEqual({});
+	});
+
+	it("value が非文字列の TextInput は取り出さない", () => {
+		const interaction = buildMalformedModalSubmitInteraction([
+			{
+				type: 18,
+				label: "x",
+				component: { type: 4, custom_id: "text", value: 42 },
+			},
+		]);
+		expect(extractModalFields(interaction)).toEqual({});
 	});
 });
 
@@ -510,7 +604,7 @@ describe("/translate-send (worker.fetch 経由)", () => {
 		expect(followups[0].body?.flags).toBeUndefined();
 	}
 
-	it("text 省略時は type 9 (MODAL) で custom_id 'ts:en:1' (既定値エンコード) を返す", async () => {
+	it("text 省略時は type 9 (MODAL) で custom_id 'ts' と 3 Label 構造 (既定値の select) を返す", async () => {
 		const { response, mock } = await postInteraction(
 			buildSendCommandInteraction(),
 		);
@@ -521,36 +615,102 @@ describe("/translate-send (worker.fetch 経由)", () => {
 				custom_id?: string;
 				title?: string;
 				components?: Array<{
-					components: Array<Record<string, unknown>>;
+					type: number;
+					label?: string;
+					component?: Record<string, unknown>;
 				}>;
 			};
 		};
 		expect(payload.type).toBe(9);
-		expect(payload.data.custom_id).toBe("ts:en:1");
+		expect(payload.data.custom_id).toBe("ts");
 		expect(payload.data.title).toBe("翻訳して送信");
-		expect(payload.data.components?.[0]?.components?.[0]).toMatchObject({
+		expect(payload.data.components).toHaveLength(3);
+
+		const [languageLabel, includeLabel, textLabel] =
+			payload.data.components ?? [];
+
+		// 言語 select: 25 言語ぶんの選択肢で "en" のみ default
+		expect(languageLabel?.type).toBe(18);
+		expect(languageLabel?.label).toBe("翻訳先の言語");
+		expect(languageLabel?.component).toMatchObject({
+			type: 3,
+			custom_id: "language",
+			required: true,
+		});
+		const languageOptions = languageLabel?.component?.options as Array<{
+			label: string;
+			value: string;
+			default?: boolean;
+		}>;
+		expect(languageOptions).toHaveLength(25);
+		expect(languageOptions.filter((option) => option.default === true)).toEqual(
+			[{ label: "English", value: "en", default: true }],
+		);
+
+		// 原文添付 select: 既定 (include_original: true) では「含める」側が default
+		expect(includeLabel?.type).toBe(18);
+		expect(includeLabel?.label).toBe("原文の添付");
+		expect(includeLabel?.component).toMatchObject({
+			type: 3,
+			custom_id: "include_original",
+			required: true,
+		});
+		expect(includeLabel?.component?.options).toEqual([
+			{ label: "含める（引用で原文を表示）", value: "1", default: true },
+			{ label: "含めない（翻訳文のみ）", value: "0", default: false },
+		]);
+
+		// 本文 Text Input: max_length 4000 を維持
+		expect(textLabel?.type).toBe(18);
+		expect(textLabel?.label).toBe("送信したいテキスト");
+		expect(textLabel?.component).toMatchObject({
 			type: 4,
 			custom_id: "text",
 			style: 2,
-			label: "送信したいテキスト",
+			placeholder: "翻訳したい文章を入力...",
 			min_length: 1,
 			max_length: 4000,
 			required: true,
 		});
+
 		// Modal を開くだけなので翻訳・Discord API 呼び出し・後続処理は一切ない
 		expect(aiRun).not.toHaveBeenCalled();
 		expect(api.fetch).not.toHaveBeenCalled();
 		expect(mock.waitUntilPromises).toHaveLength(0);
 	});
 
-	it("language: ja + include_original: false 指定時は custom_id 'ts:ja:0' になる", async () => {
+	it("language: ja 指定時は ja の選択肢に default が付く", async () => {
 		const { response } = await postInteraction(
-			buildSendCommandInteraction({ language: "ja", includeOriginal: false }),
+			buildSendCommandInteraction({ language: "ja" }),
 		);
 		const payload = (await response.json()) as {
-			data: { custom_id?: string };
+			data: {
+				components?: Array<{
+					component?: { options?: Array<{ value: string; default?: boolean }> };
+				}>;
+			};
 		};
-		expect(payload.data.custom_id).toBe("ts:ja:0");
+		const options = payload.data.components?.[0]?.component?.options ?? [];
+		expect(options.filter((option) => option.default === true)).toMatchObject([
+			{ value: "ja", default: true },
+		]);
+	});
+
+	it("include_original: false 指定時は「含めない」側に default が付く", async () => {
+		const { response } = await postInteraction(
+			buildSendCommandInteraction({ includeOriginal: false }),
+		);
+		const payload = (await response.json()) as {
+			data: {
+				components?: Array<{
+					component?: { options?: unknown };
+				}>;
+			};
+		};
+		expect(payload.data.components?.[1]?.component?.options).toEqual([
+			{ label: "含める（引用で原文を表示）", value: "1", default: false },
+			{ label: "含めない（翻訳文のみ）", value: "0", default: true },
+		]);
 	});
 
 	it("text あり: ephemeral defer → 翻訳 → webhook 送信 → @original を確認メッセージに更新", async () => {
@@ -729,11 +889,12 @@ describe("/translate-send (worker.fetch 経由)", () => {
 	});
 
 	describe("MODAL_SUBMIT", () => {
-		it("defer → 翻訳 → webhook 送信 → @original を ephemeral 確認に更新 (custom_id から ja を復元)", async () => {
+		it("defer → 翻訳 → webhook 送信 → @original を ephemeral 確認に更新 (select の提出値が翻訳に反映される)", async () => {
 			mockTranslation("Bonjour !");
 			const { response, mock } = await postInteraction(
 				buildModalSubmitInteraction({
-					customId: "ts:ja:1",
+					language: "ja",
+					includeOriginal: "1",
 					text: "Hello, world!",
 				}),
 			);
@@ -742,6 +903,14 @@ describe("/translate-send (worker.fetch 経由)", () => {
 				data: { flags: 64 },
 			});
 			await mock.drain();
+
+			// select で選んだ ja へ翻訳されている
+			expect(aiRun).toHaveBeenCalledTimes(1);
+			const [, params] = aiRun.mock.calls[0] as [
+				string,
+				{ messages: Array<{ role: string; content: string }> },
+			];
+			expect(params.messages[1].content).toContain("into Japanese");
 
 			const executed = api.executeCalls();
 			expect(executed).toHaveLength(1);
@@ -754,9 +923,58 @@ describe("/translate-send (worker.fetch 経由)", () => {
 			expect(api.followupCalls()).toHaveLength(0);
 		});
 
-		it("ts: プレフィックス外の custom_id は拒否される", async () => {
+		it("custom_id が正確に 'ts' でない提出 (旧形式 'ts:ja:1' を含む) は拒否される", async () => {
+			for (const customId of ["ts:ja:1", "other-modal", "ts:en:0", ""]) {
+				const { response, mock } = await postInteraction(
+					buildModalSubmitInteraction({ customId }),
+				);
+				await expect(response.json()).resolves.toEqual({
+					type: 4,
+					data: {
+						content: expect.stringContaining("不正なリクエスト"),
+						flags: 64,
+					},
+				});
+				expect(mock.waitUntilPromises).toHaveLength(0);
+			}
+			expect(aiRun).not.toHaveBeenCalled();
+			expect(api.fetch).not.toHaveBeenCalled();
+		});
+
+		it("選択肢外の言語 (zz) は precheck の再検証で拒否される", async () => {
 			const { response, mock } = await postInteraction(
-				buildModalSubmitInteraction({ customId: "other-modal:ja:1" }),
+				buildModalSubmitInteraction({ language: "zz" }),
+			);
+			await expect(response.json()).resolves.toEqual({
+				type: 4,
+				data: {
+					content: expect.stringContaining("不正な言語"),
+					flags: 64,
+				},
+			});
+			expect(mock.waitUntilPromises).toHaveLength(0);
+			expect(api.fetch).not.toHaveBeenCalled();
+			expect(aiRun).not.toHaveBeenCalled();
+		});
+
+		it("継承プロパティ名 (toString) は言語として拒否する (Object.hasOwn 防御)", async () => {
+			const { response, mock } = await postInteraction(
+				buildModalSubmitInteraction({ language: "toString" }),
+			);
+			await expect(response.json()).resolves.toEqual({
+				type: 4,
+				data: {
+					content: expect.stringContaining("不正な言語"),
+					flags: 64,
+				},
+			});
+			expect(mock.waitUntilPromises).toHaveLength(0);
+			expect(aiRun).not.toHaveBeenCalled();
+		});
+
+		it("include_original が '0' | '1' 以外 ('2') の提出は拒否される", async () => {
+			const { response, mock } = await postInteraction(
+				buildModalSubmitInteraction({ includeOriginal: "2" }),
 			);
 			await expect(response.json()).resolves.toEqual({
 				type: 4,
@@ -770,48 +988,34 @@ describe("/translate-send (worker.fetch 経由)", () => {
 			expect(aiRun).not.toHaveBeenCalled();
 		});
 
-		it("言語不正の custom_id (ts:zz:1) は拒否される", async () => {
+		it("言語・原文添付の select のみで本文 (text) がない提出は ephemeral エラーで拒否される", async () => {
 			const { response, mock } = await postInteraction(
-				buildModalSubmitInteraction({ customId: "ts:zz:1" }),
+				buildMalformedModalSubmitInteraction([
+					{
+						type: 18,
+						label: "翻訳先の言語",
+						component: { type: 3, custom_id: "language", values: ["ja"] },
+					},
+					{
+						type: 18,
+						label: "原文の添付",
+						component: {
+							type: 3,
+							custom_id: "include_original",
+							values: ["1"],
+						},
+					},
+				]),
 			);
 			await expect(response.json()).resolves.toEqual({
 				type: 4,
 				data: {
-					content: expect.stringContaining("不正なリクエスト"),
+					content: expect.stringContaining("翻訳する内容がありません"),
 					flags: 64,
 				},
 			});
 			expect(mock.waitUntilPromises).toHaveLength(0);
 			expect(api.fetch).not.toHaveBeenCalled();
-		});
-
-		it("フラグ不正の custom_id (ts:ja:2) は拒否される", async () => {
-			const { response, mock } = await postInteraction(
-				buildModalSubmitInteraction({ customId: "ts:ja:2" }),
-			);
-			await expect(response.json()).resolves.toEqual({
-				type: 4,
-				data: {
-					content: expect.stringContaining("不正なリクエスト"),
-					flags: 64,
-				},
-			});
-			expect(mock.waitUntilPromises).toHaveLength(0);
-			expect(api.fetch).not.toHaveBeenCalled();
-		});
-
-		it("継承プロパティ名 (ts:toString:1) は言語として拒否する (Object.hasOwn 防御)", async () => {
-			const { response, mock } = await postInteraction(
-				buildModalSubmitInteraction({ customId: "ts:toString:1" }),
-			);
-			await expect(response.json()).resolves.toEqual({
-				type: 4,
-				data: {
-					content: expect.stringContaining("不正なリクエスト"),
-					flags: 64,
-				},
-			});
-			expect(mock.waitUntilPromises).toHaveLength(0);
 		});
 
 		it("空白のみの本文は ephemeral エラーで拒否される", async () => {
