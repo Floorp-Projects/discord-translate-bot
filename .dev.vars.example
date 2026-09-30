@@ -1,0 +1,4 @@
+# wrangler dev が読み込むローカル用環境変数。
+# cp .dev.vars.example .dev.vars して値を設定すること (.dev.vars は git 管理外)
+DISCORD_TRANSLATE_BOT_PUBLIC_KEY=
+DISCORD_APP_ID=

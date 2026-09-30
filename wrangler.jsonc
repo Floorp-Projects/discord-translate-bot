@@ -1,0 +1,18 @@
+/**
+ * Cloudflare Workers 設定
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "discord-translate-bot",
+	"main": "src/index.ts",
+	// 2025-09-01 では Secure Curves (Ed25519) がデフォルトで有効
+	"compatibility_date": "2025-09-01",
+	"ai": { "binding": "AI" },
+	"kv_namespaces": [
+		// 本番時は `npx wrangler kv namespace create translate-kv` で作成した実 ID に置き換えること
+		{ "binding": "KV", "id": "7fd9dae3c1644abc8810abfbdfccf961" }
+	],
+	"vars": { "DISCORD_APP_ID": "1554801967526576189" },
+	"observability": { "enabled": true }
+}
