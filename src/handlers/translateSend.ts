@@ -1,4 +1,4 @@
-import { LANGUAGE_NAMES } from "../commands";
+import { LANGUAGE_CHOICES, LANGUAGE_NAMES } from "../commands";
 import {
 	createChannelWebhook,
 	editOriginalInteractionResponse,
@@ -30,8 +30,14 @@ export const MAX_CONTENT_LENGTH = 2000;
 /** 受け付ける本文の最大長 (Modal TextInput の上限に合わせる。超過分は組み立て時に切り詰める) */
 export const MAX_INPUT_LENGTH = 4000;
 
-/** modal custom_id のプレフィックス (他の modal との区別 — §3.2) */
-export const MODAL_CUSTOM_ID_PREFIX = "ts:";
+/** modal custom_id (言語・原文添付は Modal 内 select で選ぶため固定値 — §3.1) */
+export const MODAL_CUSTOM_ID = "ts";
+
+/** modal 内言語選択 String Select コンポーネントの custom_id */
+export const MODAL_LANGUAGE_CUSTOM_ID = "language";
+
+/** modal 内原文添付 String Select コンポーネントの custom_id */
+export const MODAL_INCLUDE_ORIGINAL_CUSTOM_ID = "include_original";
 
 /** modal 内 Text Input コンポーネントの custom_id */
 export const MODAL_TEXT_CUSTOM_ID = "text";
@@ -153,106 +159,167 @@ export async function precheckTranslateSend(
 }
 
 /**
- * modal の custom_id を組み立てる。
- * エンコード形式: "ts:<language>:<include_original 0|1>" (§3.2)。
- * 長さは custom_id の 100 字制限に対して十分短い。
- */
-export function encodeModalCustomId(
-	language: string,
-	includeOriginal: boolean,
-): string {
-	return `${MODAL_CUSTOM_ID_PREFIX}${language}:${includeOriginal ? "1" : "0"}`;
-}
-
-/**
- * modal の custom_id を防御的にデコードする (§3.2)。
- * プレフィックス・形式・言語値 (Object.hasOwn — setLanguage.ts と同じパターン)・
- * フラグ値のいずれかが不正な場合は null を返す。
- */
-export function decodeModalCustomId(
-	customId: string,
-): { language: string; includeOriginal: boolean } | null {
-	if (!customId.startsWith(MODAL_CUSTOM_ID_PREFIX)) {
-		return null;
-	}
-	const parts = customId.slice(MODAL_CUSTOM_ID_PREFIX.length).split(":");
-	if (parts.length !== 2) {
-		return null;
-	}
-	const [language, flag] = parts;
-	if (!Object.hasOwn(LANGUAGE_NAMES, language)) {
-		return null;
-	}
-	if (flag !== "0" && flag !== "1") {
-		return null;
-	}
-	return { language, includeOriginal: flag === "1" };
-}
-
-/**
  * text 省略時に開く Modal (interaction callback type 9) の応答ペイロード (§3.1)。
- * language / include_original は custom_id にエンコードして引き回す
- * (Modal 提出の interaction には slash command のオプション値が渡らないため)。
+ * 2025-08-25 の Modal コンポーネント拡張に合わせ、すべての入力を
+ * Label (type 18) でラップする。language / include_original は Modal 内の
+ * String Select (type 3) で直接選択でき、コマンド実行時のオプション値は
+ * 各 select の初期選択 (option 単位の default: true) として反映する。
  */
 export function buildModalResponse(
 	language: string,
 	includeOriginal: boolean,
 ): InteractionResponse {
+	// 不正な言語コードが来ても select が壊れないよう "en" にフォールバック
+	const defaultLanguage = Object.hasOwn(LANGUAGE_NAMES, language)
+		? language
+		: "en";
 	return {
 		type: InteractionResponseType.Modal,
 		data: {
-			custom_id: encodeModalCustomId(language, includeOriginal),
+			custom_id: MODAL_CUSTOM_ID,
 			title: "翻訳して送信",
 			components: [
 				{
-					type: 1, // Action Row
-					components: [
-						{
-							type: 4, // Text Input
-							custom_id: MODAL_TEXT_CUSTOM_ID,
-							style: 2, // Paragraph (複数行)
-							label: "送信したいテキスト",
-							placeholder: "翻訳したい文章を入力...",
-							min_length: 1,
-							max_length: MAX_INPUT_LENGTH,
-							required: true,
-						},
-					],
+					type: 18, // Label
+					label: "翻訳先の言語",
+					component: {
+						type: 3, // String Select
+						custom_id: MODAL_LANGUAGE_CUSTOM_ID,
+						required: true,
+						options: LANGUAGE_CHOICES.map((choice) => ({
+							label: choice.name,
+							value: choice.value,
+							...(choice.value === defaultLanguage ? { default: true } : {}),
+						})),
+					},
+				},
+				{
+					type: 18, // Label
+					label: "原文の添付",
+					component: {
+						type: 3, // String Select
+						custom_id: MODAL_INCLUDE_ORIGINAL_CUSTOM_ID,
+						required: true,
+						options: [
+							{
+								label: "含める（引用で原文を表示）",
+								value: "1",
+								default: includeOriginal,
+							},
+							{
+								label: "含めない（翻訳文のみ）",
+								value: "0",
+								default: !includeOriginal,
+							},
+						],
+					},
+				},
+				{
+					type: 18, // Label
+					label: "送信したいテキスト",
+					component: {
+						type: 4, // Text Input
+						custom_id: MODAL_TEXT_CUSTOM_ID,
+						style: 2, // Paragraph (複数行)
+						placeholder: "翻訳したい文章を入力...",
+						min_length: 1,
+						max_length: MAX_INPUT_LENGTH,
+						required: true,
+					},
 				},
 			],
 		},
 	};
 }
 
-/**
- * MODAL_SUBMIT (type 5) の本文を取り出す。
- * components[0].components[0].value は固定添字でよい (§3.2) が、
- * 想定外の形状 (直接 API 実行等) に備えて防御的にパースする。
- * 取り出せない場合は null。
- */
-export function extractModalText(interaction: Interaction): string | null {
-	const components = interaction.data?.components;
-	if (!Array.isArray(components) || components.length === 0) {
+/** MODAL_SUBMIT (type 5) から防御的に取り出した入力値 */
+export interface ModalSubmitFields {
+	/** 言語 select の選択値 (取り出せなかった場合は欠落) */
+	language?: string;
+	/**
+	 * 原文添付 select の選択値 ("0" | "1" の生値。
+	 * 不正値の判定はハンドラ側で行うため文字列のまま返す)
+	 */
+	includeOriginal?: string;
+	/** Text Input の本文 (取り出せなかった場合は欠落) */
+	text?: string;
+}
+
+/** String Select (type 3) の選択値 (values の先頭要素) を取り出す */
+function extractSelectValue(component: {
+	type?: unknown;
+	values?: unknown;
+}): string | null {
+	if (component.type !== 3 || !Array.isArray(component.values)) {
 		return null;
 	}
-	const row: unknown = components[0];
-	if (typeof row !== "object" || row === null) {
-		return null;
-	}
-	const rowComponents = (row as { components?: unknown }).components;
-	if (!Array.isArray(rowComponents) || rowComponents.length === 0) {
-		return null;
-	}
-	const input: unknown = rowComponents[0];
-	if (typeof input !== "object" || input === null) {
-		return null;
-	}
-	const value = (input as { value?: unknown }).value;
-	return typeof value === "string" ? value : null;
+	const first: unknown = component.values[0];
+	return typeof first === "string" ? first : null;
 }
 
 /**
- * MODAL_SUBMIT (type 5) の処理。custom_id と本文を防御的に取り出し、
+ * MODAL_SUBMIT (type 5) の入力値を取り出す。
+ * data.components には Label (type 18) が並び、入力本体はその component の中に
+ * 入る。想定外の形状 (直接 API 実行・旧形式の再提出等) に備えて防御的にパースし、
+ * Label 以外の要素・型違い・values 空配列などは無視する (固定添字アクセスはしない)。
+ * 取り出せなかった項目は欠落のまま返す。
+ */
+export function extractModalFields(
+	interaction: Interaction,
+): ModalSubmitFields {
+	const fields: ModalSubmitFields = {};
+	const rawComponents: unknown = interaction.data?.components;
+	if (!Array.isArray(rawComponents)) {
+		return fields;
+	}
+	for (const item of rawComponents) {
+		if (typeof item !== "object" || item === null) {
+			continue;
+		}
+		// Label (type 18) 以外 (旧形式の ActionRow 等) は無視する
+		const label = item as { type?: unknown; component?: unknown };
+		if (label.type !== 18) {
+			continue;
+		}
+		const component: unknown = label.component;
+		if (typeof component !== "object" || component === null) {
+			continue;
+		}
+		const input = component as {
+			type?: unknown;
+			custom_id?: unknown;
+			value?: unknown;
+			values?: unknown;
+		};
+		switch (input.custom_id) {
+			case MODAL_LANGUAGE_CUSTOM_ID: {
+				const value = extractSelectValue(input);
+				if (value !== null) {
+					fields.language = value;
+				}
+				break;
+			}
+			case MODAL_INCLUDE_ORIGINAL_CUSTOM_ID: {
+				const value = extractSelectValue(input);
+				if (value !== null) {
+					fields.includeOriginal = value;
+				}
+				break;
+			}
+			case MODAL_TEXT_CUSTOM_ID: {
+				// 本文は Text Input (type 4) の value のみ受け付ける
+				if (input.type === 4 && typeof input.value === "string") {
+					fields.text = input.value;
+				}
+				break;
+			}
+		}
+	}
+	return fields;
+}
+
+/**
+ * MODAL_SUBMIT (type 5) の処理。custom_id と入力値を防御的に取り出し、
  * precheck 相当の再検証 (権限・言語・文字数 — defense in depth §7) を行ってから
  * ephemeral defer 応答を返し、重い処理を waitUntil へ逃がす。
  * 以降の followup / @original 更新はすべて Modal 提出の新 token を使う (§3.2)。
@@ -262,11 +329,8 @@ export async function handleTranslateSendModalSubmit(
 	interaction: Interaction,
 	ctx: ExecutionContext,
 ): Promise<Response> {
-	const customId = interaction.data?.custom_id;
-	const decoded =
-		typeof customId === "string" ? decodeModalCustomId(customId) : null;
-	if (decoded === null) {
-		// 不正な custom_id / 言語値 → ephemeral エラーで即応 (§3.2)
+	if (interaction.data?.custom_id !== MODAL_CUSTOM_ID) {
+		// 不正な custom_id → ephemeral エラーで即応 (§3.2)
 		return Response.json(
 			buildEphemeralResponse(
 				"不正なリクエストです。もう一度コマンドを実行してください。",
@@ -274,16 +338,25 @@ export async function handleTranslateSendModalSubmit(
 		);
 	}
 
-	const text = extractModalText(interaction);
-	if (text === null || text.trim() === "") {
+	const fields = extractModalFields(interaction);
+	if (fields.text === undefined || fields.text.trim() === "") {
 		return Response.json(buildEphemeralResponse("翻訳する内容がありません。"));
 	}
+	// 原文添付 select の値は "0" | "1" のみ許容
+	// (直接 API 実行・旧 modal 再利用に備えた再検証 — §7)
+	if (fields.includeOriginal !== "0" && fields.includeOriginal !== "1") {
+		return Response.json(
+			buildEphemeralResponse(
+				"不正なリクエストです。もう一度コマンドを実行してください。",
+			),
+		);
+	}
 
-	// precheck 相当の再検証 (権限の再判定を含む — §7)
+	// precheck 相当の再検証 (権限の再判定・言語値の Object.hasOwn 検証を含む — §7)
 	const precheck = await precheckTranslateSend(env, interaction, {
-		text,
-		language: decoded.language,
-		includeOriginal: decoded.includeOriginal,
+		text: fields.text,
+		language: fields.language ?? "",
+		includeOriginal: fields.includeOriginal === "1",
 	});
 	if (!precheck.allowed) {
 		// defer 前に ephemeral エラーで即応

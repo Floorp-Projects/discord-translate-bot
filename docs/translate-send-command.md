@@ -66,6 +66,11 @@ REST API (HTTP エンドポイント + JSON ペイロード) を `fetch` で直�
 
 - **`text` 省略時は Modal を開く** (§3)。コマンドの大半の用途は短文入力のため、
   入力欄付きダイアログを既定の UX にする。
+- **`language` / `include_original` は省略時に Modal を開く際、各 String Select の
+  初期選択 (option 単位の `default: true`) として反映される** (§3)。指定ありの場合は
+  指定値が初期選択になり、省略時は既定値 (`en` / `true`) が初期選択になる。
+  値の引き回し (custom_id へのエンコード) は不要で、選択結果は Modal 提出時に
+  Select の `values` として返る。
 - **choices は 25 が上限**。`src/commands.ts` の `LANGUAGE_CHOICES` はちょうど
   25 言語で、既に `set-language` と共有される共通定数として切り出されているため、
   本コマンドはこれをそのまま参照すればよい (言語の追加/削除は 2 コマンドに自動反映)。
@@ -92,39 +97,94 @@ REST API (HTTP エンドポイント + JSON ペイロード) を `fetch` で直�
 interaction callback `type: 9 (MODAL)` を返す。`InteractionResponseType`
 (`src/types.ts`) に `Modal: 9` を追加する。
 
+Modal のコンポーネント体系は **2025-08-25 の Discord「New Modal Components」拡張**
+に準拠し、すべての入力コンポーネントを **Label (type 18) でラップする**。
+1 つの Label の内側に置ける入力コンポーネントは 1 個のみ。本コマンドの Modal は
+**3 つの Label** で構成する:
+
+1. **言語の String Select (type 3)** — `LANGUAGE_CHOICES` と同じ 25 言語を選択肢とし、
+   コマンド実行時の `language` 値 (省略時は既定 `en`) に該当する option に
+   `default: true` を付けて初期選択にする。
+2. **原文添付の String Select (type 3)** — 「含める / 含めない」の 2 択
+   (value はそれぞれ `"1"` / `"0"`)。コマンド実行時の `include_original` 値
+   (省略時は既定 `true`) に応じて初期選択を切り替える。
+3. **本文の Text Input (type 4)** — Paragraph (style 2)、`max_length: 4000`。
+
+String Select の初期選択は **option 単位の `default: true`** で指定する
+(`default_values` は User/Role Select 専用のため使えない)。また本拡張により
+Text Input 直下の `label` フィールドは非推奨となり、**Label 側の `label` を
+使う**。Label の構造は `{ type: 18, label (45 字以内), description? (100 字以内),
+component }`。
+
 ```jsonc
 {
   "type": 9,
   "data": {
-    "custom_id": "ts:<language>:<include_original 0|1>",
+    "custom_id": "ts",
     "title": "翻訳して送信",
     "components": [
       {
-        "type": 1, // Action Row
-        "components": [
-          {
-            "type": 4, // Text Input
-            "custom_id": "text",
-            "style": 2, // 1: Short / 2: Paragraph
-            "label": "送信したいテキスト",
-            "placeholder": "翻訳したい文章を入力...",
-            "min_length": 1,
-            "max_length": 4000,
-            "required": true
-          }
-        ]
+        "type": 18, // Label
+        "label": "翻訳先の言語",
+        "component": {
+          "type": 3, // String Select
+          "custom_id": "language",
+          "required": true,
+          "options": [
+            // LANGUAGE_CHOICES (set-language と同じ 25 言語)。該当 1 件に default: true
+            { "label": "English", "value": "en", "default": true },
+            { "label": "Japanese", "value": "ja" }
+            // ... 残り 23 言語
+          ]
+        }
+      },
+      {
+        "type": 18, // Label
+        "label": "原文の添付",
+        "component": {
+          "type": 3, // String Select
+          "custom_id": "include_original",
+          "required": true,
+          "options": [
+            { "label": "含める（引用で原文を表示）", "value": "1", "default": true },
+            { "label": "含めない（翻訳文のみ）", "value": "0" }
+          ]
+        }
+      },
+      {
+        "type": 18, // Label
+        "label": "送信したいテキスト",
+        "component": {
+          "type": 4, // Text Input
+          "custom_id": "text",
+          "style": 2, // 1: Short / 2: Paragraph
+          "placeholder": "翻訳したい文章を入力...",
+          "min_length": 1,
+          "max_length": 4000,
+          "required": true
+        }
       }
     ]
   }
 }
 ```
 
+言語・原文添付は **Modal 内の Select で直接選択される**ため、modal の `custom_id`
+は **固定値 `"ts"` に簡素化**した (旧設計の `ts:<language>:<include_original 0|1>`
+エンコードは不要)。プレフィックス `ts` で他の modal と区別する。長さは 100 字制限に
+対して十分短い。
+
+> **注記**: Label + Select を用いる Modal ペイロードは新 API のため、デプロイ前に
+> 実機での表示確認を推奨する。
+
 Discord 側の制限値:
 
 | 項目 | 上限 |
 | --- | --- |
-| `title` / `label` | 各 45 字 |
+| `title` / Label の `label` | 各 45 字 |
+| Label の `description` | 100 字 |
 | `custom_id` (modal・コンポーネントとも) | 100 字 |
+| 1 Label あたりの入力コンポーネント数 | 1 個 |
 | Text Input コンポーネント数 | 1 modal あたり 5 個 |
 | `style` | 1 = Short (単行) / 2 = Paragraph (複数行) |
 | 入力値 (`min_length` / `max_length`) | 1〜4000 字 |
@@ -132,12 +192,11 @@ Discord 側の制限値:
 ### 3.2 Modal 提出時 (interaction type 5: MODAL_SUBMIT) の扱い
 
 **Modal 提出の interaction には slash command のオプション値が渡ってこない**
-(`data` には `custom_id` と入力コンポーネントのみ入る)。そのため、コマンド実行時の
-`language` / `include_original` を modal 側の `custom_id` にエンコードして引き回す。
+(`data` には `custom_id` と入力コンポーネントのみ入る)。`language` /
+`include_original` は Modal 内の Select で直接選択されるため、MODAL_SUBMIT の
+payload から選択値を読み取る (custom_id へのエンコードは不要)。
 
-- エンコード形式: `ts:<language>:<include_original 0|1>` (例: `ts:en:1`, `ts:ja:0`)。
-  プレフィックス `ts:` で他の modal と区別する。長さは 100 字制限に対して十分短い。
-- Modal 提出の payload からは以下を取得する:
+- Modal 提出の payload は以下の構造:
 
 ```jsonc
 {
@@ -146,24 +205,40 @@ Discord 側の制限値:
   "channel_id": "...",
   "member": { "...": "..." },
   "data": {
-    "custom_id": "ts:en:1",
+    "custom_id": "ts",
     "components": [
       {
-        "type": 1,
-        "components": [
-          { "type": 4, "custom_id": "text", "value": "ユーザーが入力した本文" }
-        ]
+        "type": 18, // Label
+        "label": "翻訳先の言語",
+        "component": { "type": 3, "custom_id": "language", "values": ["ja"] }
+      },
+      {
+        "type": 18, // Label
+        "label": "原文の添付",
+        "component": { "type": 3, "custom_id": "include_original", "values": ["1"] }
+      },
+      {
+        "type": 18, // Label
+        "label": "送信したいテキスト",
+        "component": { "type": 4, "custom_id": "text", "value": "ユーザーが入力した本文" }
       }
     ]
   }
 }
 ```
 
-- 本文: `data.components[0].components[0].value`
-  (Action Row は 1 つ、その中の Text Input も 1 つと分かっているため固定添字でよい)。
-- `custom_id` のパースは防御的に行う。`language` は `Object.hasOwn(LANGUAGE_NAMES, lang)`
-  で検証 (継承プロパティ対策も兼ねる — `src/handlers/setLanguage.ts` と同じパターン)。
-  不正な値は ephemeral エラーで即応する。
+- `data.components` には **Label (type 18) が並び、入力本体はその内側の
+  `component` に入る**。Text Input は `value: string`、String Select は
+  `values: string[]` で提出される。
+- パースは**防御的に行う**: 固定添字アクセスはせず `data.components` を走査し、
+  Label 以外の要素 (旧形式の Action Row 等)・型違い・空配列などは無視する。
+  各入力は `custom_id` (`language` / `include_original` / `text`) で識別する。
+- **サーバー側の再検証を維持する** (直接 API 実行・旧 modal 再利用に備える — §7):
+  - `language`: `Object.hasOwn(LANGUAGE_NAMES, lang)` で検証 (継承プロパティ対策も
+    兼ねる — `src/handlers/setLanguage.ts` と同じパターン)。不正な値は ephemeral
+    エラーで即応する。
+  - `include_original`: select の値は `"0"` / `"1"` のみ許容し、それ以外は
+    ephemeral エラーで即応する。
 - **Modal 提出後は新しい interaction token で応答する**。元のコマンドの token は
   初回応答 (type 9) で消費済みのため使えない。以降の defer / followup /
   `@original` 更新はすべて Modal 提出の token を使う (§6)。
@@ -381,8 +456,9 @@ Discord ──/translate-send (text 省略) ──► Worker
 Discord ◄────── type 9 (MODAL) ───────── Worker               … 3 秒以内
            (ユーザーが Modal に入力・提出)
 Discord ──type 5: MODAL_SUBMIT (新 token)──► Worker
-           custom_id "ts:<lang>:<0|1>" をパース
-           components[0].components[0].value を本文として取得
+            custom_id "ts" を確認
+            Modal 内 Select で選択された言語・原文添付 (values) と
+            Text Input の本文 (value) を取得
            ② precheck 相当の再検証 (権限・言語・文字数)
                 NG → type 4 ephemeral エラーで即応
 Discord ◄────── type 5 defer (flags: 64) ─ Worker             … 3 秒以内
@@ -447,8 +523,9 @@ Discord ◄────── type 5 defer (flags: 64) ─ Worker             �
       Modal 応答構築、waitUntil 側の翻訳 → webhook 送信 → `@original` 更新、
       フォールバック一式
 - [ ] `src/index.ts`: `InteractionType.ModalSubmit` (type 5) のルーティングを追加
-      (現在は `Unsupported interaction type` で 400 を返す箇所)。custom_id プレフィックス
-      `ts:` で translateSend ハンドラへ振り分け。`translate-send` コマンドの振り分けも追加
+      (現在は `Unsupported interaction type` で 400 を返す箇所)。custom_id `ts`
+      (言語・原文添付は Modal 内 Select で選択) で translateSend ハンドラへ振り分け。
+      `translate-send` コマンドの振り分けも追加
 - [ ] `Env` に `DISCORD_BOT_TOKEN` (secret) を追加し、
       `npx wrangler secret put DISCORD_BOT_TOKEN` で設定
 - [ ] `wrangler.jsonc` / `docs/plan.md` / `README.md` の更新 (§4.2 の Bot Token
@@ -470,7 +547,8 @@ Discord ◄────── type 5 defer (flags: 64) ─ Worker             �
 - [ ] テスト (Vitest、`test/handlers.test.ts` の既存パターンに準拠 —
       `buildSignedInteractionRequest` + `worker.fetch` 経由、`MockKV`、
       `vi.stubGlobal("fetch")` で Discord REST 呼び出しをアサート):
-      - `text` 省略時の type 9 応答 (title / custom_id エンコード / TextInput 定義の検証)
+      - `text` 省略時の type 9 応答 (title / custom_id / Modal 内 Select
+        (言語・原文添付) + TextInput 定義の検証)
       - MODAL_SUBMIT の受信 → `custom_id` パース → type 5 ephemeral defer → waitUntil
       - `language` 省略時 `en`、`include_original` 省略時 `true` の既定解釈
       - webhook 実行ペイロード (username の優先順位 nick → global_name → username、
