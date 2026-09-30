@@ -12,6 +12,7 @@ import {
 	truncateToDiscordLimit,
 } from "../src/handlers/translate";
 import worker, { MAX_BODY_LENGTH } from "../src/index";
+import { translationCacheKey } from "../src/store";
 import type { Env, Interaction } from "../src/types";
 import {
 	buildSignedInteractionRequest,
@@ -581,6 +582,51 @@ describe("interaction handler (worker.fetch 経由)", () => {
 			const { body } = parseFollowup();
 			expect(body.content).toBe(`${prefix}${translated}`);
 			expect(body.content?.endsWith("…")).toBe(false);
+		});
+
+		it("同一の原文+言語がキャッシュ済みなら AI を呼ばずキャッシュ済み翻訳を ephemeral followup する", async () => {
+			kv.store.set(`user:${USER_ID}`, JSON.stringify({ lang: "ja" }));
+			const cacheKey = await translationCacheKey("Hello, world!", "ja");
+			kv.store.set(cacheKey, "こんにちは、世界！");
+			await handleTranslate(env, buildTranslateInteraction());
+			expect(aiRun).not.toHaveBeenCalled();
+			expect(followupFetch).toHaveBeenCalledTimes(1);
+			const { url, body } = parseFollowup();
+			expect(url).toBe(FOLLOWUP_URL);
+			expect(body.flags).toBe(64);
+			// AI 実行時と同一フォーマット (🌐 **Japanese**\n<訳>) で送られる
+			expect(body.content).toBe("🌐 **Japanese**\nこんにちは、世界！");
+		});
+
+		it("キャッシュ未ヒット時は AI を呼び、翻訳結果を cache キーに TTL 2 週間で書き込む", async () => {
+			kv.store.set(`user:${USER_ID}`, JSON.stringify({ lang: "ja" }));
+			aiRun.mockResolvedValue({
+				choices: [{ message: { content: "Bonjour !" } }],
+			});
+			await handleTranslate(env, buildTranslateInteraction());
+			expect(aiRun).toHaveBeenCalledTimes(1);
+			const cacheKey = await translationCacheKey("Hello, world!", "ja");
+			expect(kv.store.get(cacheKey)).toBe("Bonjour !");
+			expect(kv.putOptions.get(cacheKey)?.expirationTtl).toBe(1209600);
+		});
+
+		it("AI が失敗した場合はキャッシュを書き込まない", async () => {
+			kv.store.set(`user:${USER_ID}`, JSON.stringify({ lang: "ja" }));
+			aiRun.mockRejectedValue(new Error("AI is down"));
+			const consoleError = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => {});
+			try {
+				await expect(
+					handleTranslate(env, buildTranslateInteraction()),
+				).resolves.toBeUndefined();
+			} finally {
+				consoleError.mockRestore();
+			}
+			const cacheKeys = [...kv.store.keys()].filter((key) =>
+				key.startsWith("cache:"),
+			);
+			expect(cacheKeys).toHaveLength(0);
 		});
 
 		it("followup 送信が非 OK でもエラーメッセージの再送を 1 回試みる", async () => {

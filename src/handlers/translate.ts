@@ -1,7 +1,12 @@
 import { LANGUAGE_NAMES } from "../commands";
 import { sendFollowup } from "../discord";
 import { isAllowedToTranslate } from "../permissions";
-import { getGuildConfig, getUserLang } from "../store";
+import {
+	cacheTranslation,
+	getCachedTranslation,
+	getGuildConfig,
+	getUserLang,
+} from "../store";
 import { translateText } from "../translate";
 import {
 	buildEphemeralResponse,
@@ -90,12 +95,23 @@ export async function handleTranslate(
 	interaction: Interaction,
 ): Promise<void> {
 	try {
-		const content = await buildResultMessage(env, interaction);
+		const { message, cacheWrite } = await buildResultMessage(env, interaction);
 		const response = await sendFollowup(env.DISCORD_APP_ID, interaction.token, {
-			content,
+			content: message,
 			flags: EPHEMERAL_FLAG,
 		});
 		if (response.ok) {
+			// ユーザーへの応答を優先するため、キャッシュ書き込みは followup 送信の後。
+			// cacheTranslation は例外を投げないため、ここで応答フローが失敗することはない。
+			// キャッシュするのは成功した翻訳のみ (AI 失敗・エラー系は buildResultMessage が例外として投げる)。
+			if (cacheWrite !== null) {
+				await cacheTranslation(
+					env,
+					cacheWrite.text,
+					cacheWrite.lang,
+					cacheWrite.translated,
+				);
+			}
 			return;
 		}
 		// response.text() 自体も失敗しうるため、ログ化は例外を握って安全に行う
@@ -114,34 +130,66 @@ export async function handleTranslate(
 }
 
 /**
+ * buildResultMessage の結果。
+ * cacheWrite は「AI で新規翻訳が成功した」場合のみ設定され、
+ * followup 送信後に KV へのキャッシュ書き込みに使われる
+ * (キャッシュヒット時・翻訳失敗時は null)。
+ */
+interface TranslateResult {
+	/** followup で送信するメッセージ */
+	message: string;
+	/** KV に書き込むべき翻訳結果 (AI 実行があった場合のみ) */
+	cacheWrite: { text: string; lang: string; translated: string } | null;
+}
+
+/**
  * 成功時は翻訳結果、ユーザー起因の失敗時は案内メッセージを組み立てる。
  * 予期しない失敗 (Workers AI エラー等) は例外として投げ、呼び出し側の
  * エラーフロー (sendErrorFollowup) へ流す。
+ * 同一の原文 + 翻訳先言語が KV にキャッシュ済み (TTL 2 週間) なら
+ * Workers AI を呼ばずキャッシュ済みの翻訳を返す (docs/plan.md §5)。
  */
 async function buildResultMessage(
 	env: Env,
 	interaction: Interaction,
-): Promise<string> {
+): Promise<TranslateResult> {
 	const userId = getUserId(interaction);
 	if (userId === null) {
-		return "実行者を特定できませんでした。";
+		return { message: "実行者を特定できませんでした。", cacheWrite: null };
 	}
 
 	// 未設定なら翻訳はせず設定を促す
 	const lang = await getUserLang(env, userId);
 	if (lang === null) {
-		return "翻訳先の言語が未設定です。/set-language で言語を設定してください。";
+		return {
+			message:
+				"翻訳先の言語が未設定です。/set-language で言語を設定してください。",
+			cacheWrite: null,
+		};
 	}
 
 	// precheck 済みだが token 有効期間内の再実行などで到達しうるため防御しておく
 	const content = getTargetMessageContent(interaction);
 	if (content === null || content.trim() === "") {
-		return "翻訳する内容がありません。";
+		return { message: "翻訳する内容がありません。", cacheWrite: null };
+	}
+
+	const langName = LANGUAGE_NAMES[lang] ?? lang;
+
+	// キャッシュヒットなら Workers AI をスキップする (失敗時は null で AI 実行へフォールバック)
+	const cached = await getCachedTranslation(env, content, lang);
+	if (cached !== null) {
+		return {
+			message: truncateToDiscordLimit(`🌐 **${langName}**\n${cached}`),
+			cacheWrite: null,
+		};
 	}
 
 	const translated = await translateText(env, content, lang);
-	const langName = LANGUAGE_NAMES[lang] ?? lang;
-	return truncateToDiscordLimit(`🌐 **${langName}**\n${translated}`);
+	return {
+		message: truncateToDiscordLimit(`🌐 **${langName}**\n${translated}`),
+		cacheWrite: { text: content, lang, translated },
+	};
 }
 
 /**
