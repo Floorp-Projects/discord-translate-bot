@@ -13,6 +13,10 @@
 		// 本番時は `npx wrangler kv namespace create translate-kv` で作成した実 ID に置き換えること
 		{ "binding": "KV", "id": "7fd9dae3c1644abc8810abfbdfccf961" }
 	],
+	// Secret は vars に書かず `npx wrangler secret put <NAME>` で設定する:
+	// - DISCORD_TRANSLATE_BOT_PUBLIC_KEY: 署名検証用
+	// - DISCORD_BOT_TOKEN: /translate-send のチャンネル webhook 作成・一覧取得用
+	//   (メッセージ送信には使わない。未設定なら bot 名義フォールバックで動作する)
 	"vars": { "DISCORD_APP_ID": "1554801967526576189" },
 	"observability": { "enabled": true }
 }

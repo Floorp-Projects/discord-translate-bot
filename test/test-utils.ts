@@ -138,6 +138,8 @@ export interface MockEnvOptions {
 	aiRun?: ReturnType<typeof vi.fn>;
 	publicKeyHex?: string;
 	appId?: string;
+	/** webhook 作成 / 一覧取得用 Bot Token (省略時は空文字 = 未設定扱い) */
+	botToken?: string;
 }
 
 /** テスト用 Env (モック KV + モック AI + 固定文字列の Discord 設定) */
@@ -147,5 +149,7 @@ export function createEnv(options: MockEnvOptions = {}): Env {
 		KV: (options.kv ?? new MockKV()) as unknown as KVNamespace,
 		DISCORD_TRANSLATE_BOT_PUBLIC_KEY: options.publicKeyHex ?? "",
 		DISCORD_APP_ID: options.appId ?? "app123",
+		// 空文字は「Bot Token 未設定」扱い (webhook 送信はフォールバックに落ちる)
+		DISCORD_BOT_TOKEN: options.botToken ?? "",
 	} as unknown as Env;
 }

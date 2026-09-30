@@ -6,6 +6,15 @@ import {
 	precheckTranslate,
 } from "./handlers/translate";
 import {
+	buildModalResponse,
+	buildSendDeferredResponse,
+	handleTranslateSendModalSubmit,
+	handleTranslateSendProcess,
+	MODAL_CUSTOM_ID_PREFIX,
+	parseCommandOptions,
+	precheckTranslateSend,
+} from "./handlers/translateSend";
+import {
 	ApplicationCommandType,
 	buildEphemeralResponse,
 	type Env,
@@ -78,12 +87,49 @@ export default {
 					);
 				}
 
+			case InteractionType.ModalSubmit:
+				return await handleModalSubmit(env, interaction, ctx);
+
 			default:
-				// MessageComponent (3) / Autocomplete (4) / ModalSubmit (5) は未使用
+				// MessageComponent (3) / Autocomplete (4) は未使用
 				return new Response("Unsupported interaction type", { status: 400 });
 		}
 	},
 } satisfies ExportedHandler<Env>;
+
+/**
+ * MODAL_SUBMIT (type 5) の振り分け。
+ * custom_id プレフィックス "ts:" (/translate-send の modal) のみ処理し、
+ * それ以外は不明リクエストとして ephemeral エラーで即応する
+ * (docs/translate-send-command.md §3.2, §8)。
+ */
+async function handleModalSubmit(
+	env: Env,
+	interaction: Interaction,
+	ctx: ExecutionContext,
+): Promise<Response> {
+	try {
+		if (
+			interaction.data?.custom_id?.startsWith(MODAL_CUSTOM_ID_PREFIX) === true
+		) {
+			return await handleTranslateSendModalSubmit(env, interaction, ctx);
+		}
+		return Response.json(
+			buildEphemeralResponse(
+				"不正なリクエストです。もう一度コマンドを実行してください。",
+			),
+		);
+	} catch (error) {
+		// KV 読み書き失敗などの予期しない例外。まだ Discord へ応答していないため
+		// ephemeral エラーで即応できる
+		console.error("ModalSubmit handling failed:", error);
+		return Response.json(
+			buildEphemeralResponse(
+				"内部エラーが発生しました。しばらくしてからもう一度お試しください。",
+			),
+		);
+	}
+}
 
 /**
  * アプリケーションコマンド (スラッシュ & コンテキストメニュー) の振り分け。
@@ -125,9 +171,46 @@ async function handleApplicationCommand(
 				return Response.json(await handleSetLanguage(env, interaction));
 			case "translate-config":
 				return Response.json(await handleConfig(env, interaction));
+			case "translate-send":
+				return await handleTranslateSendCommand(env, interaction, ctx);
 		}
 	}
 
 	// 未知のコマンド / data のない不正 payload → ephemeral エラー
 	return Response.json(buildEphemeralResponse("不明なコマンドです。"));
+}
+
+/**
+ * /translate-send の振り分け (docs/translate-send-command.md §6)。
+ *
+ * defer 前の同期パス: 権限チェック / 言語値検証 / 文字数検証のみ。
+ * - text あり → type 5 defer (ephemeral) → 重い処理は waitUntil へ
+ * - text なし → type 9 (MODAL) で入力ダイアログを開く (§3.1)。
+ *   この interaction は type 9 応答で完了し、翻訳などの重処理は一切行わない (§3.2)。
+ */
+async function handleTranslateSendCommand(
+	env: Env,
+	interaction: Interaction,
+	ctx: ExecutionContext,
+): Promise<Response> {
+	const options = parseCommandOptions(interaction);
+	const precheck = await precheckTranslateSend(env, interaction, options);
+	if (!precheck.allowed) {
+		// defer せず ephemeral エラーで即応 (waitUntil 不要の最速パス)
+		return Response.json(precheck.response);
+	}
+
+	if (precheck.options.text === null) {
+		// text 省略 → Modal を開く (§3)
+		return Response.json(
+			buildModalResponse(
+				precheck.options.language,
+				precheck.options.includeOriginal,
+			),
+		);
+	}
+
+	// 重い処理 (Workers AI / webhook 送信 / @original 更新) はすべて waitUntil へ
+	ctx.waitUntil(handleTranslateSendProcess(env, interaction, precheck.options));
+	return Response.json(buildSendDeferredResponse());
 }

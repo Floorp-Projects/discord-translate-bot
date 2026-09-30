@@ -13,6 +13,7 @@ Discord でメッセージを右クリック →「アプリ」→ **Translate**
 | `Translate` | Message Context Menu (メッセージ右クリック → アプリ) | メッセージを自分の言語へ翻訳。結果は ephemeral (実行者にのみ表示) |
 | `/set-language` | Slash | 自分の翻訳先言語を設定 (25 言語から選択) |
 | `/translate-config` | Slash (**管理者のみ**、`default_member_permissions: "8"`) | Bot の使用を許可するロールを設定 |
+| `/translate-send` | Slash | 入力した文を翻訳し、そのチャンネルへ**実行者の名義・アバターで送信** (チャンネル webhook 使用。作成できない環境では bot 名義でフォールバック)。`text` 省略時は Modal で入力 (最大 4,000 文字) |
 
 - 翻訳結果は ephemeral (flags 64) なのでチャンネルを汚しません
 - **同一の原文 + 翻訳先言語の翻訳結果は KV に 2 週間 (TTL) キャッシュされ、期間内の再翻訳では Workers AI の呼び出しをスキップします** (表示される結果のフォーマットはキャッシュなしの場合と同一です)
@@ -60,6 +61,10 @@ npx wrangler kv namespace create translate-kv
 
 # 署名検証用の公開鍵を secret として登録
 npx wrangler secret put DISCORD_TRANSLATE_BOT_PUBLIC_KEY
+
+# /translate-send 用: チャンネル webhook 作成のため Bot Token を secret として登録
+# (未設定でも Bot は動作するが、/translate-send は bot 名義のフォールバック送信になる)
+npx wrangler secret put DISCORD_BOT_TOKEN
 ```
 
 `wrangler.jsonc` の `vars.DISCORD_APP_ID` に手順 1 で控えた Application ID を設定します。
@@ -74,7 +79,7 @@ DISCORD_APP_ID=<Application ID> DISCORD_BOT_TOKEN=<Bot Token> npm run register
 npm run deploy
 ```
 
-`DISCORD_BOT_TOKEN` は **Developer Portal の Bot ページで Reset Token して取得**します。トークンは Worker には配置せず、この登録スクリプト (または CI) でしか使いません。
+`DISCORD_BOT_TOKEN` は **Developer Portal の Bot ページで Reset Token して取得**します。コマンド登録スクリプト (または CI) で使うほか、**Worker secret としても設定**します (手順 3 の `npx wrangler secret put DISCORD_BOT_TOKEN`)。Worker 上での使用は `/translate-send` のチャンネル webhook 作成・一覧取得のみに限定され、メッセージ送信には使われません。
 
 main push すると CI がデプロイ後にコマンド登録まで自動実行するため、ローカルでの `npm run register` は初回セットアップ時や CI を使わない場合のみで十分です。
 
@@ -118,7 +123,7 @@ Repository secrets として次の 2 つを設定してください。
 | --- | --- |
 | `CLOUDFLARE_WORKER_EDIT_API_TOKEN` | Workers デプロイ権限を持つ Cloudflare API トークン |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare アカウント ID |
-| `DISCORD_BOT_TOKEN` | Bot トークン — コマンド登録用。Developer Portal の Bot ページで Reset Token して取得 |
+| `DISCORD_BOT_TOKEN` | Bot トークン — コマンド登録と `/translate-send` のチャンネル webhook 作成用 (Worker secret としても設定)。Developer Portal の Bot ページで Reset Token して取得 |
 | `DISCORD_APP_ID` | Application ID |
 
 コマンド定義だけを再登録したい場合は、Actions の該当 run の **Re-run all jobs** で再実行できます (workflow_dispatch にも対応しています)。
@@ -141,4 +146,4 @@ Cloudflare Worker (src/index.ts)
 ```
 
 - KV: `user:{userId}` = `{"lang":"ja"}` (翻訳先言語) / `guild:{guildId}` = `{"allowedRoleIds":["123"]}` (許可ロール) / `cache:{sha256(lang:text)}` = 翻訳済み文字列 (TTL 2 週間の翻訳結果キャッシュ)
-- followup は interaction token を使うため **Worker に Bot Token は不要**
+- followup は interaction token を使うため認証ヘッダ不要。Bot Token (`DISCORD_BOT_TOKEN` secret) は `/translate-send` のチャンネル webhook 作成・一覧取得でのみ使用する

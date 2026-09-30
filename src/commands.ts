@@ -1,4 +1,4 @@
-/** コマンド選択肢 (/set-language の language) */
+/** コマンド選択肢 (/set-language, /translate-send の language) */
 export interface CommandChoice {
 	name: string;
 	value: string;
@@ -11,6 +11,8 @@ export interface CommandOption {
 	type: number;
 	required?: boolean;
 	choices?: CommandChoice[];
+	/** STRING の入力上限 (Discord API では最大 6000 まで指定可能) */
+	max_length?: number;
 }
 
 /** コマンド登録 API (PUT /applications/{id}/commands) に送る定義 */
@@ -58,7 +60,7 @@ export const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
 	hu: "Hungarian",
 };
 
-/** /set-language の choices (Discord の上限は 25) */
+/** language の choices (Discord の上限は 25) */
 export const LANGUAGE_CHOICES: readonly CommandChoice[] = Object.entries(
 	LANGUAGE_NAMES,
 ).map(([value, name]) => ({ name, value }));
@@ -68,6 +70,8 @@ export const LANGUAGE_CHOICES: readonly CommandChoice[] = Object.entries(
  * - Translate: メッセージコンテキストメニュー (type 3)
  * - set-language: ユーザーの母国語を設定
  * - translate-config: Bot 使用許可ロールを設定 (管理者のみ)
+ * - translate-send: 自分の発言を翻訳してチャンネルへ送信
+ *   (docs/translate-send-command.md §2)
  */
 export const COMMANDS: readonly ApplicationCommandDefinition[] = [
 	{
@@ -100,6 +104,34 @@ export const COMMANDS: readonly ApplicationCommandDefinition[] = [
 				description: "Role allowed to use the bot",
 				type: 9, // ROLE
 				required: true,
+			},
+		],
+	},
+	{
+		name: "translate-send",
+		type: 1, // CHAT_INPUT
+		description: "Translate your text and send it to this channel as you",
+		options: [
+			{
+				name: "text",
+				description: "Text to translate (opens a dialog if omitted)",
+				type: 3, // STRING
+				required: false,
+				max_length: 2000, // Discord のメッセージ本文上限に合わせる (§2)
+			},
+			{
+				name: "language",
+				description: "Target language (default: English)",
+				type: 3, // STRING
+				required: false,
+				choices: [...LANGUAGE_CHOICES],
+			},
+			{
+				// BOOLEAN には choices を付けられないため on/off は description で示す
+				name: "include_original",
+				description: "Attach the original text as a quote (default: on)",
+				type: 5, // BOOLEAN
+				required: false,
 			},
 		],
 	},
