@@ -85,15 +85,27 @@ export async function buildSignedInteractionRequest(
 	});
 }
 
+/** MockKV.put に渡された options の記録用 */
+export interface MockKVPutOptions {
+	expirationTtl?: number;
+}
+
 /** store.ts が使う get / put だけを持つインメモリ KV モック */
 export class MockKV {
 	readonly store = new Map<string, string>();
+	/** キーごとに最後の put 呼び出しで渡された options (expirationTtl 検証用) */
+	readonly putOptions = new Map<string, MockKVPutOptions | undefined>();
 
 	async get(key: string): Promise<string | null> {
 		return this.store.get(key) ?? null;
 	}
 
-	async put(key: string, value: string): Promise<void> {
+	async put(
+		key: string,
+		value: string,
+		options?: MockKVPutOptions,
+	): Promise<void> {
+		this.putOptions.set(key, options);
 		this.store.set(key, value);
 	}
 }

@@ -16,6 +16,7 @@ Discord でメッセージを右クリック →「アプリ」→ **Translate**
 | `/translate-send` | Slash | 入力した文を翻訳し、そのチャンネルへ**実行者の名義・アバターで送信** (チャンネル webhook 使用。作成できない環境では bot 名義でフォールバック)。`text` 省略時は Modal で入力 (最大 4,000 文字) |
 
 - 翻訳結果は ephemeral (flags 64) なのでチャンネルを汚しません
+- **同一の原文 + 翻訳先言語の翻訳結果は KV に 2 週間 (TTL) キャッシュされ、期間内の再翻訳では Workers AI の呼び出しをスキップします** (表示される結果のフォーマットはキャッシュなしの場合と同一です)
 - **ギルド設定が未設定の間は全員が Translate を使用できます**。`/translate-config` でロールを 1 つでも設定すると、そのロール保持者のみに制限されます
 - 言語未設定のまま Translate を実行すると、`/set-language` を促す ephemeral エラーが返ります
 
@@ -144,5 +145,5 @@ Cloudflare Worker (src/index.ts)
         └─ Discord REST: followup webhook で ephemeral 結果送信 (src/discord.ts)
 ```
 
-- KV: `user:{userId}` = `{"lang":"ja"}` (翻訳先言語) / `guild:{guildId}` = `{"allowedRoleIds":["123"]}` (許可ロール)
+- KV: `user:{userId}` = `{"lang":"ja"}` (翻訳先言語) / `guild:{guildId}` = `{"allowedRoleIds":["123"]}` (許可ロール) / `cache:{sha256(lang:text)}` = 翻訳済み文字列 (TTL 2 週間の翻訳結果キャッシュ)
 - followup は interaction token を使うため認証ヘッダ不要。Bot Token (`DISCORD_BOT_TOKEN` secret) は `/translate-send` のチャンネル webhook 作成・一覧取得でのみ使用する
