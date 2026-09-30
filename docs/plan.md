@@ -30,7 +30,7 @@ Discord Client (右クリック → アプリ)
 │  Bindings:                                                           │
 │   - AI  (Workers AI)                                                 │
 │   - KV  (設定ストア)                                                  │
-│   - Secrets: DISCORD_PUBLIC_KEY, (CI 用 DISCORD_BOT_TOKEN)            │
+│   - Secrets: DISCORD_PUBLIC_KEY, DISCORD_BOT_TOKEN (webhook 作成用)   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,6 +81,7 @@ const result = await env.AI.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
 | `Translate` | Message Context Menu (type 3) | メッセージを自分の母国語に翻訳 |
 | `/set-language language:<choice>` | Slash | ユーザー自身の母国語を設定 (ja / en / ko / zh / …最大 25 言語を choices で提供、必要なら後で autocomplete 化) |
 | `/translate-config roles:<role...>` | Slash | ギルドで Bot 使用を許可するロールを設定。`default_member_permissions` でサーバー管理者のみ実行可能にする |
+| `/translate-send text:<text> language:<choice> include_original:<bool>` | Slash | 入力した文を翻訳しそのチャンネルへ送信。**チャンネル webhook で実行者の名義・アバターで投稿** (作成できない環境では bot 名義でフォールバック)。`text` 省略時は Modal で入力 (最大 4,000 字)、`language` 既定 `en`、`include_original` 既定 `true` |
 
 - コマンド登録は `scripts/register-commands.ts` (global command: `PUT /applications/{app_id}/commands`) を `npm run register` で手動実行。Bot が常時 online である必要はない。
 - Interactions Endpoint URL: `https://<worker>.workers.dev/api/interactions` を Discord Developer Portal に設定 (PING 検証を通す)。
@@ -125,7 +126,10 @@ POST /api/interactions
             4. 失敗時は同 webhook でエラーメッセージ)
 ```
 
-- followup は interaction token を使うため **Bot Token 不要** (Worker に Bot Token を置かない)。
+- followup は interaction token を使うため Bot Token 不要。ただし `/translate-send` の
+  チャンネル webhook 作成 (docs/translate-send-command.md §4.2) には **Bot Token が必要**で、
+  `DISCORD_BOT_TOKEN` を Worker secret として配置する。使用は webhook の作成・一覧取得のみに
+  限定した secret 限定管理とし、メッセージ送信には使わない。
 - interaction token の有効期限は 15 分。wall clock 30 秒制約内に十分収まる。
 - 同一 interaction につき followup は 1 回なので Discord のレート制限は実質無関係。
 
@@ -169,11 +173,15 @@ interface Env {
   KV: KVNamespace;             // 設定ストア
   DISCORD_PUBLIC_KEY: string;  // secret: 署名検証用
   DISCORD_APP_ID: string;      // var: followup webhook 用
+  DISCORD_BOT_TOKEN?: string;  // secret: チャンネル webhook 作成・一覧取得用 (/translate-send)。未設定なら bot 名義フォールバック
 }
 ```
 
-Bot Token は Worker に置かない。コマンド登録スクリプトだけが `DISCORD_BOT_TOKEN`
-(環境変数 or CI secret) を使う。
+`DISCORD_BOT_TOKEN` は Worker secret (`wrangler secret put`) として配置する。
+ただし使用目的を限定する: チャンネル webhook の作成・一覧取得 (`/translate-send`) のみで、
+メッセージ送信 (followup / webhook 実行) には使わない — それらは interaction token と
+URL 内の webhook token が認証を担うため。コマンド登録スクリプトは従来どおり
+環境変数 or CI secret で同じトークンを使う。
 
 ## 8. 実装ステップ
 
@@ -217,8 +225,8 @@ npm run deploy                            # wrangler deploy
 | LLM 翻訳の品質・フォーマット崩れ | プロンプトで「翻訳のみを出力」を固定。`translate.ts` アダプタでモデル差し替え可能に |
 | 3 秒制約超過 | defer を最初の処理として実装済み。waitUntil で wall clock 30 秒 |
 | KV の反映遅延で権限が一瞬古くなる | 許容 (設定変更は低頻度)。厳密性が必要になったら D1 へ移行 |
-| Bot Token 漏洩 | Worker に token を配置しない設計。登録スクリプトはローカル実行 or CI secret のみ |
-| 悪用 (長文連投で Neurons 消費) | メッセージ長上限 (例: 2,000 文字) を設け、超過はエラー応答 |
+| Bot Token 漏洩 | `/translate-send` 向けに `DISCORD_BOT_TOKEN` を Worker secret として配置する (`wrangler secret put`)。コード上の使用はチャンネル webhook の作成・一覧取得のみに限定し、メッセージ送信には使わない。登録スクリプトはローカル実行 or CI secret |
+| 悪用 (長文連投で Neurons 消費) | メッセージ長上限 (例: 2,000 文字) を設け、超過はエラー応答。ただし `/translate-send` の Modal 入力は最大 4,000 字を許容するため、この前提は従来より緩む (入力は全文を受け、送信メッセージは組み立て時に Discord 上限 2,000 字へ切り詰め)。悪用の抑止は実行者を許可ロールに限定できる権限チェック (§4 権限モデル) で担保する |
 
 ## 12. 受け入れ基準
 

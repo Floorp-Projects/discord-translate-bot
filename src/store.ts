@@ -1,4 +1,4 @@
-import type { Env, GuildConfig } from "./types";
+import type { ChannelWebhook, Env, GuildConfig } from "./types";
 
 /** user:{userId} の値 (例: {"lang":"ja"}) */
 interface UserLangValue {
@@ -8,6 +8,12 @@ interface UserLangValue {
 /** guild:{guildId} の値 (例: {"allowedRoleIds":["123"]}) */
 interface GuildConfigValue {
 	allowedRoleIds?: unknown;
+}
+
+/** webhook:{channelId} の値 (例: {"id":"...","token":"..."}) */
+interface ChannelWebhookValue {
+	id?: unknown;
+	token?: unknown;
 }
 
 /**
@@ -76,4 +82,45 @@ export async function setGuildConfig(
 	allowedRoleIds: string[],
 ): Promise<void> {
 	await env.KV.put(`guild:${guildId}`, JSON.stringify({ allowedRoleIds }));
+}
+
+/**
+ * チャンネルに紐づく Bot 作成 webhook のキャッシュを取得する
+ * (キー: webhook:{channelId} — docs/translate-send-command.md §4.4)。
+ * 未設定・壊れた JSON・不正な型はすべて null 扱いにする。
+ */
+export async function getChannelWebhook(
+	env: Env,
+	channelId: string,
+): Promise<ChannelWebhook | null> {
+	const raw = await env.KV.get(`webhook:${channelId}`);
+	if (raw === null) {
+		return null;
+	}
+	try {
+		const value = JSON.parse(raw) as ChannelWebhookValue;
+		if (
+			typeof value.id !== "string" ||
+			value.id === "" ||
+			typeof value.token !== "string" ||
+			value.token === ""
+		) {
+			return null;
+		}
+		return { id: value.id, token: value.token };
+	} catch {
+		return null;
+	}
+}
+
+/** チャンネルに紐づく Bot 作成 webhook のキャッシュを保存する (キー: webhook:{channelId}) */
+export async function setChannelWebhook(
+	env: Env,
+	channelId: string,
+	webhook: ChannelWebhook,
+): Promise<void> {
+	await env.KV.put(
+		`webhook:${channelId}`,
+		JSON.stringify({ id: webhook.id, token: webhook.token }),
+	);
 }
