@@ -26,7 +26,7 @@ Discord の slash コマンドオプションはロールの複数選択に対�
 
 ## 翻訳モデルについて
 
-Workers AI の [`@cf/deepseek-ai/deepseek-v4-flash-0731`](https://developers.cloudflare.com/workers-ai/models/) を使用しています (`src/translate.ts` の `TRANSLATE_MODEL` 定数)。`reasoning_effort: "none"` を明示して翻訳に不要な推論トークンを排除しています。
+Workers AI の [`@cf/deepseek-ai/deepseek-v4.1-flash-1017`](https://developers.cloudflare.com/workers-ai/models/deepseek-v4.1-flash-1017/) を使用しています (`src/translate.ts` の `TRANSLATE_MODEL` 定数)。`reasoning_effort: "none"` を明示して翻訳に不要な推論トークンを排除しています。
 
 > [!WARNING]
 > **このモデルは Workers Free プランでは利用できません。Workers Paid プランが必要です。**

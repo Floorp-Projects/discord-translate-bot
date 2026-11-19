@@ -38,7 +38,7 @@ Discord Client (右クリック → アプリ)
 
 | 方式 | 長所 | 短所 |
 | --- | --- | --- |
-| **LLM 翻訳 `@cf/deepseek-ai/deepseek-v4-flash-0731` (採用)** | 元言語の検出が不要 (1 回の呼び出しで完結) / DeepSeek の多言語品質が高い / `reasoning_effort: "none"` を指定でき翻訳に不要な推論トークンを排除 / 安価 ($0.44 per M input, $1.32 per M output, $0.014 per M cached input) | 推論デフォルトが `high` のため `reasoning_effort` の明示指定が必須 |
+| **LLM 翻訳 `@cf/deepseek-ai/deepseek-v4.1-flash-1017` (採用)** | 元言語の検出が不要 (1 回の呼び出しで完結) / DeepSeek の多言語品質が高い / `reasoning_effort: "none"` を指定でき翻訳に不要な推論トークンを排除 / 安価 ($0.30 per M input, $1.20 per M output, $0.006 per M cached input) | 推論デフォルトが `high` のため `reasoning_effort` の明示指定が必須 |
 | LLM 翻訳 `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (代替) | 実績のある定番 / reasoning パラメータが不要でシンプル | 多言語品質で DeepSeek に劣る場面がある |
 | LLM 翻訳 `@cf/google/gemma-4-26b-a4b-it` (代替・低コスト候補) | 最安クラス ($0.10 per M input, $0.30 per M output ≒ DeepSeek の約 1/4) / 4B active MoE で推論が高速 / コンテキスト 256K | active 4B と小型のため日本語など低リソース言語の翻訳品質は V4 Flash (13B active) に劣る可能性 / `reasoning_effort` の様な制御パラメータがなく思考トークンを API レベルで抑制できない |
 | M2M100 `@cf/meta/m2m100-1.2M` (代替) | 翻訳専用で最安クラス | `source_lang` が必須 → 言語検出が別途必要で 2 回呼びになり逆に割高 |
@@ -46,7 +46,7 @@ Discord Client (右クリック → アプリ)
 採用モデルの呼び出し設定 (`translate.ts`):
 
 ```ts
-const result = await env.AI.run("@cf/deepseek-ai/deepseek-v4-flash-0731", {
+const result = await env.AI.run("@cf/deepseek-ai/deepseek-v4.1-flash-1017", {
   messages: [
     { role: "system", content: SYSTEM_PROMPT },  // 「翻訳のみを出力。原文の体裁を維持」を固定
     { role: "user", content: `Translate the following text into ${lang}:\n${text}` },
