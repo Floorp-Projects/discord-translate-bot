@@ -32,14 +32,14 @@ interface RunParams {
 }
 
 describe("translateText", () => {
-	it("モデル @cf/deepseek-ai/deepseek-v4-flash-0731 で AI.run を 1 回呼ぶ", async () => {
+	it("モデル @cf/deepseek-ai/deepseek-v4.1-flash-1017 で AI.run を 1 回呼ぶ", async () => {
 		const { run } = await translateWith({
 			choices: [{ message: { content: "bonjour" } }],
 		});
 		expect(run).toHaveBeenCalledTimes(1);
 		const [model] = firstRunCall(run);
 		expect(model).toBe(TRANSLATE_MODEL);
-		expect(model).toBe("@cf/deepseek-ai/deepseek-v4-flash-0731");
+		expect(model).toBe("@cf/deepseek-ai/deepseek-v4.1-flash-1017");
 	});
 
 	it("翻訳向けパラメータ (reasoning_effort none / temperature 0 / max_completion_tokens 2048) を渡す", async () => {

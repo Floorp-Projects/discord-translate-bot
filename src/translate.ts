@@ -6,7 +6,7 @@ import type { Env } from "./types";
  * モデルの差し替えはこの定数 1 行で可能 (docs/plan.md §2 翻訳エンジン選定)。
  * 注意: このモデルは Workers Free プランでは利用不可 (Workers Paid が必要)。
  */
-export const TRANSLATE_MODEL = "@cf/deepseek-ai/deepseek-v4-flash-0731";
+export const TRANSLATE_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 
 /**
  * 出力トークンの上限 (入力自体は 2,000 文字で制限 — handlers/translate.ts)。
